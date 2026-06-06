@@ -69,6 +69,32 @@ def fetch_text_from_url(url: str) -> str:
             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
         )
     }
+
+    # Substack JSON APIを試みる（JSレンダリング不要で確実に取得できる）
+    m = re.match(r'(https?://[^/]+)/p/([^/?#]+)', url)
+    if m:
+        base, slug = m.group(1), m.group(2)
+        try:
+            api_url = f"{base}/api/v1/posts/{slug}"
+            r = requests.get(api_url, headers=headers, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+            body_html = data.get("body_html", "")
+            if body_html:
+                soup = BeautifulSoup(body_html, "html.parser")
+                text = soup.get_text(separator="\n", strip=True)
+                if len(text) > 200:
+                    return text[:6000]
+            # body_htmlがない場合はtitle+subtitleだけでも返す
+            title = data.get("title", "")
+            subtitle = data.get("subtitle", "")
+            text = f"{title}\n{subtitle}".strip()
+            if len(text) > 50:
+                return text[:6000]
+        except Exception:
+            pass  # APIが使えない場合は従来のスクレイピングにフォールバック
+
+    # フォールバック：従来のHTMLスクレイピング
     try:
         r = requests.get(url, headers=headers, timeout=15)
         r.raise_for_status()
@@ -77,12 +103,10 @@ def fetch_text_from_url(url: str) -> str:
 
     soup = BeautifulSoup(r.text, "html.parser")
 
-    # ペイウォール以降を削除
     paywall = soup.find(class_=re.compile(r"paywall|subscription-widget"))
     if paywall:
         paywall.decompose()
 
-    # Substack向けのセレクター（優先順）
     selectors = [
         "div.body.markup",
         "div.available-content",
@@ -97,7 +121,6 @@ def fetch_text_from_url(url: str) -> str:
             if len(text) > 200:
                 return text[:6000]
 
-    # フォールバック：p タグを全部集める
     paragraphs = [p.get_text(strip=True) for p in soup.find_all("p") if p.get_text(strip=True)]
     text = "\n".join(paragraphs)
     if len(text) < 100:

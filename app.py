@@ -152,6 +152,21 @@ def fetch_note_text(url: str) -> str:
 
 
 # ── Substack用テキスト取得（JSON API優先） ────────────────────
+def _extract_text_from_substack_data(data: dict) -> str:
+    body_html = data.get("body_html", "")
+    if body_html:
+        soup = BeautifulSoup(body_html, "html.parser")
+        text = soup.get_text(separator="\n", strip=True)
+        if len(text) > 200:
+            return text[:6000]
+    title = data.get("title", "")
+    subtitle = data.get("subtitle", "")
+    text = f"{title}\n{subtitle}".strip()
+    if len(text) > 50:
+        return text[:6000]
+    return ""
+
+
 def fetch_substack_text(url: str) -> str:
     headers = {
         "User-Agent": (
@@ -159,6 +174,8 @@ def fetch_substack_text(url: str) -> str:
             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
         )
     }
+
+    # 形式1: https://subdomain.substack.com/p/slug
     m = re.match(r'(https?://[^/]+)/p/([^/?#]+)', url)
     if m:
         base, slug = m.group(1), m.group(2)
@@ -166,18 +183,35 @@ def fetch_substack_text(url: str) -> str:
             api_url = f"{base}/api/v1/posts/{slug}"
             r = requests.get(api_url, headers=headers, timeout=15)
             r.raise_for_status()
-            data = r.json()
-            body_html = data.get("body_html", "")
-            if body_html:
-                soup = BeautifulSoup(body_html, "html.parser")
-                text = soup.get_text(separator="\n", strip=True)
-                if len(text) > 200:
-                    return text[:6000]
-            title = data.get("title", "")
-            subtitle = data.get("subtitle", "")
-            text = f"{title}\n{subtitle}".strip()
-            if len(text) > 50:
-                return text[:6000]
+            text = _extract_text_from_substack_data(r.json())
+            if text:
+                return text
+        except Exception:
+            pass
+
+    # 形式2: https://substack.com/home/post/p-{数字ID}
+    # → HTMLのcanonical URLを取り出してサブドメイン形式に変換する
+    if re.match(r'https?://substack\.com/home/post/', url):
+        try:
+            r = requests.get(url, headers=headers, timeout=15)
+            r.raise_for_status()
+            soup = BeautifulSoup(r.text, "html.parser")
+            canonical = soup.find("link", rel="canonical")
+            og_url = soup.find("meta", property="og:url")
+            real_url = (
+                canonical.get("href") if canonical else
+                og_url.get("content") if og_url else None
+            )
+            if real_url and "/p/" in real_url:
+                mc = re.match(r'(https?://[^/]+)/p/([^/?#]+)', real_url)
+                if mc:
+                    base, slug = mc.group(1), mc.group(2)
+                    api_url = f"{base}/api/v1/posts/{slug}"
+                    r2 = requests.get(api_url, headers=headers, timeout=15)
+                    r2.raise_for_status()
+                    text = _extract_text_from_substack_data(r2.json())
+                    if text:
+                        return text
         except Exception:
             pass
 
